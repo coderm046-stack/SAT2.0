@@ -2326,15 +2326,20 @@
                         const gender = row['Gender'] || row['gender'] || row['GENDER'] || row['Sex'];
                         if (rollNo && name) { await db.students.add({ rollNo: String(rollNo), name: String(name), gender: String(gender || 'Male') }); imported++; }
                     }
-                    alert(`Successfully imported ${imported} students!\n💾 Saved to your device.`);
-                    loadDailyAttendance();
+                    alert(`Successfully imported ${imported} students!\n💾 Saved to your device.\nRoll numbers re-assigned (females A–Z, then males A–Z).`);
+                    await autoRenumberStudents(false);
                 } catch (error) { alert('Error reading file: ' + error.message); }
             };
             reader.readAsArrayBuffer(file);
         }
 
         function getSortedStudents(students) {
-            return students.sort((a, b) => { const nA = parseInt(a.rollNo)||0; const nB = parseInt(b.rollNo)||0; return nA !== nB ? nA - nB : a.rollNo.localeCompare(b.rollNo); });
+            return [...students].sort((a, b) => {
+                const gA = a.gender.toLowerCase().startsWith('f') ? 0 : 1;
+                const gB = b.gender.toLowerCase().startsWith('f') ? 0 : 1;
+                if (gA !== gB) return gA - gB;
+                return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+            });
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -2907,8 +2912,7 @@
             await db.students.add({ rollNo, name, gender });
             document.getElementById('new-roll').value = '';
             document.getElementById('new-name').value = '';
-            renderStudentManagerList();
-            loadDailyAttendance();
+            await autoRenumberStudents(false);
         }
 
         // Inline edit: turn a row into an edit form
@@ -2941,8 +2945,7 @@
             const conflict = await db.students.where('rollNo').equals(rollNo).first();
             if (conflict && conflict.id !== id) { alert(`Roll No ${rollNo} is already used by "${conflict.name}".`); return; }
             await db.students.update(id, { rollNo, name, gender });
-            renderStudentManagerList();
-            loadDailyAttendance();
+            await autoRenumberStudents(false);
         }
 
         async function deleteStudent(id, rollNo, name) {
@@ -2977,7 +2980,7 @@
         // ✅ Auto-Renumber: Only changes rollNo on student records.
         //    Attendance stays linked via studentId — ZERO data corruption.
         async function autoRenumberStudents(showConfirm = true) {
-            if (showConfirm && !confirm('Renumber all students sequentially (1, 2, 3…) sorted by current roll order?\n\nAttendance history is preserved — this only updates roll numbers.')) return;
+            if (showConfirm && !confirm('Renumber all students: females A–Z first, then males A–Z.\n\nAttendance history is preserved — this only updates roll numbers.')) return;
             const students = getSortedStudents(await db.students.toArray());
             for (let i = 0; i < students.length; i++) {
                 await db.students.update(students[i].id, { rollNo: String(i + 1) });
