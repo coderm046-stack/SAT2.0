@@ -111,6 +111,34 @@
             justify-content: center;
         }
         
+        /* ── ROLL COUNT CARD ────────────────────────────────────── */
+        .roll-count-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 6px 20px;
+            background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+            font-size: 13px;
+            font-weight: 700;
+            color: rgba(255,255,255,0.95);
+        }
+        .roll-count-bar span {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .roll-count-bar .rc-sep {
+            opacity: 0.4;
+            font-weight: 400;
+        }
+        .roll-count-bar .rc-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 15px;
+        }
+        .rc-f { color: #f9a8d4; }
+        .rc-m { color: #93c5fd; }
+        .rc-t { color: #fff; }
+
         /* ── DATE BAR (always visible) ──────────────────────────── */
         .daily-date-section {
             padding: 14px 20px 14px;
@@ -1534,6 +1562,15 @@
         <!-- Hidden native input keeps compatibility with existing JS references -->
         <input type="date" id="daily-date" style="display:none;" onchange="loadDailyAttendance()">
 
+        <!-- ROLL COUNT BAR -->
+        <div class="roll-count-bar">
+            <span><span class="rc-f">Girls</span> <span class="rc-val rc-f" id="rc-girls">0</span></span>
+            <span class="rc-sep">|</span>
+            <span><span class="rc-m">Boys</span> <span class="rc-val rc-m" id="rc-boys">0</span></span>
+            <span class="rc-sep">|</span>
+            <span><span class="rc-t">Total</span> <span class="rc-val rc-t" id="rc-total">0</span></span>
+        </div>
+
         <!-- DATE BAR — always visible, shows today's date + toggle button -->
         <div class="daily-date-section">
             <div class="date-bar">
@@ -1902,6 +1939,15 @@
                         📥 Download Removed List <span id="removed-count-badge" style="background:rgba(255,255,255,0.28); padding:1px 9px; border-radius:20px; font-size:12px; font-weight:800;">0</span>
                     </button>
                     <span style="font-size:12px; color:var(--text-secondary); flex:1;">Excel log of every student removed above — roll no, name, gender &amp; removal date, for your records.</span>
+                </div>
+                <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button onclick="downloadAllRemarks()" style="padding:10px 18px; background:linear-gradient(135deg,#8b5cf6,#6d28d9); color:white; border:none; border-radius:10px; font-weight:700; font-size:14px; cursor:pointer; display:flex; align-items:center; gap:7px;">
+                        📋 Remarks → Excel
+                    </button>
+                    <button onclick="downloadAllRemarksPDF()" style="padding:10px 18px; background:linear-gradient(135deg,#f97316,#ea580c); color:white; border:none; border-radius:10px; font-weight:700; font-size:14px; cursor:pointer; display:flex; align-items:center; gap:7px;">
+                        📋 Remarks → PDF
+                    </button>
+                    <span style="font-size:12px; color:var(--text-secondary); flex:1;">Every remark ever entered for all students, grouped by student then by date (newest first).</span>
                 </div>
                 <p style="margin-top:10px; font-size:12px; color:var(--text-secondary);">
                     💾 Students saved to IndexedDB (persists in this browser). Upload Excel to bulk-import, or add individually above.
@@ -2504,11 +2550,22 @@
             renderCustomCalendar(); // lightweight — just redraws the grid
         }
 
+        function updateRollCount(students) {
+            let girls = 0, boys = 0;
+            for (const s of students) {
+                if (s.gender.toLowerCase().startsWith('f')) girls++; else boys++;
+            }
+            document.getElementById('rc-girls').textContent = girls;
+            document.getElementById('rc-boys').textContent = boys;
+            document.getElementById('rc-total').textContent = girls + boys;
+        }
+
         async function loadDailyAttendance() {
             currentDate = document.getElementById('daily-date').value;
             // Always keep the date bar in sync
             updateDateBarLabel(currentDate);
             const students = getSortedStudents(await db.students.toArray());
+            updateRollCount(students);
             const listContainer = document.getElementById('student-list');
 
             // Holiday / Sunday check
@@ -3051,6 +3108,169 @@
             XLSX.utils.book_append_sheet(wb, ws, 'Removed Students');
             const date = new Date().toISOString().split('T')[0];
             XLSX.writeFile(wb, `Removed_Students_${date}.xlsx`);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // DOWNLOAD ALL REMARKS (EXCEL) — grouped by student, newest first
+        // ═══════════════════════════════════════════════════════════════
+        async function downloadAllRemarks() {
+            const students = getSortedStudents(await db.students.toArray());
+            if (!students.length) { alert('No students found.'); return; }
+
+            // Fetch ALL attendance records that have a non-empty remark
+            const allRecords = await db.attendance
+                .where('remark').above('')
+                .filter(r => r.remark && r.remark.trim() !== '')
+                .toArray();
+            if (!allRecords.length) { alert('No remarks found for any student.'); return; }
+
+            // Group by studentId
+            const byStudent = {};
+            for (const r of allRecords) {
+                if (!byStudent[r.studentId]) byStudent[r.studentId] = [];
+                byStudent[r.studentId].push(r);
+            }
+
+            const days  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            const headerRow = ['Roll No','Student Name','Gender','Date','Day','Status','Remark'];
+            const data = [headerRow];
+
+            for (const student of students) {
+                const records = byStudent[student.id] || [];
+                if (!records.length) continue;
+                // Sort by date descending (newest first)
+                records.sort((a, b) => b.date.localeCompare(a.date));
+                for (const r of records) {
+                    const d = new Date(r.date + 'T00:00:00');
+                    const day = days[d.getDay()];
+                    const dd = String(d.getDate()).padStart(2,'0');
+                    const mm = String(d.getMonth()+1).padStart(2,'0');
+                    const yyyy = d.getFullYear();
+                    const dateLabel = `${dd}-${mm}-${yyyy}`;
+                    const status = r.status === 'present' ? 'Present' : r.status === 'absent' ? 'Absent' : '-';
+                    data.push([student.rollNo, student.name, student.gender, dateLabel, day, status, r.remark]);
+                }
+            }
+
+            if (data.length === 1) { alert('No remarks found.'); return; }
+
+            const ws = XLSX.utils.aoa_to_sheet(data);
+            ws['!cols'] = [{wch:10},{wch:28},{wch:10},{wch:14},{wch:8},{wch:12},{wch:40}];
+            // Style header row — purple
+            const headerRange = XLSX.utils.decode_range(ws['!ref']);
+            for (let c = headerRange.s.c; c <= headerRange.e.c; c++) {
+                const addr = XLSX.utils.encode_cell({r:0, c});
+                if (ws[addr]) ws[addr].s = { font:{bold:true, color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'7C3AED'}}, alignment:{horizontal:'center'} };
+            }
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'All Remarks');
+            XLSX.writeFile(wb, `All_Student_Remarks_${new Date().toISOString().split('T')[0]}.xlsx`);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // DOWNLOAD ALL REMARKS (PDF) — grouped by student, newest first
+        // ═══════════════════════════════════════════════════════════════
+        async function downloadAllRemarksPDF() {
+            try {
+                let JsPDF = null;
+                if (window.jspdf && typeof window.jspdf.jsPDF === 'function') {
+                    JsPDF = window.jspdf.jsPDF;
+                } else if (typeof window.jsPDF === 'function') {
+                    JsPDF = window.jsPDF;
+                } else if (window.jsPDF && typeof window.jsPDF.jsPDF === 'function') {
+                    JsPDF = window.jsPDF.jsPDF;
+                }
+                if (!JsPDF) { alert('PDF library not loaded yet. Please wait a moment and try again.'); return; }
+
+                const doc = new JsPDF('p', 'mm', 'a4');
+                if (typeof doc.autoTable !== 'function') {
+                    alert('PDF table plugin (AutoTable) not loaded. Please refresh the page and try again.'); return;
+                }
+
+                const students = getSortedStudents(await db.students.toArray());
+                if (!students.length) { alert('No students found.'); return; }
+
+                const allRecords = await db.attendance
+                    .where('remark').above('')
+                    .filter(r => r.remark && r.remark.trim() !== '')
+                    .toArray();
+                if (!allRecords.length) { alert('No remarks found for any student.'); return; }
+
+                const byStudent = {};
+                for (const r of allRecords) {
+                    if (!byStudent[r.studentId]) byStudent[r.studentId] = [];
+                    byStudent[r.studentId].push(r);
+                }
+
+                const days  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+                const tableData = [];
+                const studentNames = [];
+
+                for (const student of students) {
+                    const records = byStudent[student.id] || [];
+                    if (!records.length) continue;
+                    records.sort((a, b) => b.date.localeCompare(a.date));
+                    studentNames.push(student);
+                    for (const r of records) {
+                        const d = new Date(r.date + 'T00:00:00');
+                        const day = days[d.getDay()];
+                        const dd = String(d.getDate()).padStart(2,'0');
+                        const mm = String(d.getMonth()+1).padStart(2,'0');
+                        const yyyy = d.getFullYear();
+                        const dateLabel = `${dd}-${mm}-${yyyy}`;
+                        const status = r.status === 'present' ? 'Present' : r.status === 'absent' ? 'Absent' : '-';
+                        tableData.push([student.rollNo, student.name, student.gender, dateLabel, day, status, r.remark]);
+                    }
+                }
+
+                if (!tableData.length) { alert('No remarks found.'); return; }
+
+                const headers = [['Roll No','Student Name','Gender','Date','Day','Status','Remark']];
+
+                const pageW = doc.internal.pageSize.getWidth();
+                const today = new Date();
+                const todayStr = `${String(today.getDate()).padStart(2,'0')}-${String(today.getMonth()+1).padStart(2,'0')}-${today.getFullYear()}`;
+
+                doc.setFontSize(13); doc.setFont('helvetica', 'bold'); doc.setTextColor(15, 23, 42);
+                doc.text('All Student Remarks Report', 14, 14);
+                doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(100, 100, 100);
+                doc.text(`Generated: ${todayStr}  |  Total remarks: ${tableData.length}  |  Total students: ${studentNames.length}`, 14, 20);
+
+                doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.3);
+                doc.line(14, 23, pageW - 14, 23);
+                doc.setTextColor(0, 0, 0);
+
+                doc.autoTable({
+                    head: headers,
+                    body: tableData,
+                    startY: 26,
+                    theme: 'grid',
+                    styles: { fontSize: 7, cellPadding: 1.5, halign: 'center', valign: 'middle', overflow: 'linebreak' },
+                    headStyles: { fillColor: [124, 58, 237], fontStyle: 'bold', fontSize: 7, halign: 'center' },
+                    columnStyles: {
+                        0: { cellWidth: 14, halign: 'center' },
+                        1: { cellWidth: 28, halign: 'left' },
+                        2: { cellWidth: 14, halign: 'center' },
+                        3: { cellWidth: 18, halign: 'center' },
+                        4: { cellWidth: 12, halign: 'center' },
+                        5: { cellWidth: 14, halign: 'center' },
+                        6: { cellWidth: 'auto', halign: 'left' }
+                    },
+                    didParseCell(data) {
+                        if (data.row.section !== 'body') return;
+                        if (data.column.index === 6) {
+                            data.cell.styles.halign = 'left';
+                        }
+                    }
+                });
+
+                doc.save(`All_Student_Remarks_${new Date().toISOString().split('T')[0]}.pdf`);
+
+            } catch (err) {
+                console.error('PDF remarks export error:', err);
+                alert('PDF export failed:\n' + err.message + '\n\nPlease refresh and try again.');
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════
